@@ -28,7 +28,7 @@ data "vsphere_resource_pool" "pool" {
 
 data "vsphere_network" "network" {
   count         = length(var.network)
-  name          = var.network_delimiter != null ? split(var.network_delimiter,keys(var.network)[count.index])[1] : keys(var.network)[count.index]
+  name          = var.network_delimiter != null ? split(var.network_delimiter, keys(var.network)[count.index])[1] : keys(var.network)[count.index]
   datacenter_id = data.vsphere_datacenter.dc.id
 }
 
@@ -68,15 +68,23 @@ data "vsphere_tag" "tag" {
 data "vsphere_folder" "folder" {
   count = var.vmfolder != null ? 1 : 0
   path  = "/${data.vsphere_datacenter.dc.name}/vm/${var.vmfolder}"
-  depends_on  = [var.vm_depends_on]
+  depends_on = [var.vm_depends_on]
+}
+
+data "vsphere_guest_os_customization" "custom_spec" {
+  count = var.use_customization_spec ? 1 : 0
+  name  = var.customization_spec_name
 }
 
 locals {
-  interface_count     = length(var.ipv4submask) #Used for Subnet handeling
+  interface_count     = length(var.ipv4submask) # Used for Subnet handling
   template_disk_count = var.content_library == null ? length(data.vsphere_virtual_machine.template[0].disks) : 0
 }
 
-// Cloning a Linux or Windows VM from a given template.
+locals {
+  adminpass_run_once_commands = var.local_adminpass != null ? [] : var.run_once
+}
+
 resource "vsphere_virtual_machine" "vm" {
   count      = var.instances
   depends_on = [var.vm_depends_on]
@@ -111,7 +119,7 @@ resource "vsphere_virtual_machine" "vm" {
   guest_id               = var.content_library == null ? data.vsphere_virtual_machine.template[0].guest_id : null
   scsi_bus_sharing       = var.scsi_bus_sharing
   scsi_type              = var.scsi_type != "" ? var.scsi_type : (var.content_library == null ? data.vsphere_virtual_machine.template[0].scsi_type : null)
-  scsi_controller_count = max(
+  scsi_controller_count  = max(
     max(0, flatten([
       for item in values(var.data_disk) : [
         for elem, val in item :
@@ -122,7 +130,8 @@ resource "vsphere_virtual_machine" "vm" {
         for elem, val in item :
         elem == "unit_number" ? val : 0
     ]])...) + 1) / 15),
-  var.scsi_controller)
+    var.scsi_controller
+  )
   wait_for_guest_net_routable = var.wait_for_guest_net_routable
   wait_for_guest_ip_timeout   = var.wait_for_guest_ip_timeout
   wait_for_guest_net_timeout  = var.wait_for_guest_net_timeout
@@ -136,6 +145,7 @@ resource "vsphere_virtual_machine" "vm" {
       adapter_type = var.network_type != null ? var.network_type[network_interface.key] : (var.content_library == null ? data.vsphere_virtual_machine.template[0].network_interface_types[0] : null)
     }
   }
+
   // Disks defined in the original template
   dynamic "disk" {
     for_each = var.content_library == null ? data.vsphere_virtual_machine.template[0].disks : []
@@ -153,6 +163,7 @@ resource "vsphere_virtual_machine" "vm" {
       io_share_count    = length(var.io_share_level) > 0 && var.io_share_level[template_disks.key] == "custom" ? var.io_share_count[template_disks.key] : null
     }
   }
+
   // Disk for template from Content Library
   dynamic "disk" {
     for_each = var.content_library == null ? [] : [1]
@@ -171,6 +182,7 @@ resource "vsphere_virtual_machine" "vm" {
       disk_mode         = length(var.disk_mode) > 0 ? var.disk_mode[template_disks.key] : null
     }
   }
+
   // Additional disks defined by Terraform config
   dynamic "disk" {
     for_each = var.data_disk
@@ -183,19 +195,19 @@ resource "vsphere_virtual_machine" "vm" {
           terraform_disks.value,
           "unit_number",
           -1
-          ) < 0 ? (
+        ) < 0 ? (
           lookup(
             terraform_disks.value,
             "data_disk_scsi_controller",
             0
-            ) > 0 ? (
+          ) > 0 ? (
             (terraform_disks.value.data_disk_scsi_controller * 15) +
             index(keys(var.data_disk), terraform_disks.key) +
             (var.scsi_controller == tonumber(terraform_disks.value["data_disk_scsi_controller"]) ? local.template_disk_count : 0)
-            ) : (
+          ) : (
             index(keys(var.data_disk), terraform_disks.key) + local.template_disk_count
           )
-          ) : (
+        ) : (
           tonumber(terraform_disks.value["unit_number"])
         )
       )
@@ -212,56 +224,68 @@ resource "vsphere_virtual_machine" "vm" {
       path              = lookup(terraform_disks.value, "path", null)
     }
   }
+
   clone {
     template_uuid = var.content_library == null ? data.vsphere_virtual_machine.template[0].id : data.vsphere_content_library_item.library_item_template[0].id
     linked_clone  = var.linked_clone
     timeout       = var.timeout
-
-    customize {
-      dynamic "linux_options" {
-        for_each = var.is_windows_image ? [] : [1]
-        content {
-          host_name    = var.staticvmname != null ? var.staticvmname : format("${var.vmname}${var.vmnameformat}", count.index + var.vmstartcount)
-          domain       = var.domain
-          hw_clock_utc = var.hw_clock_utc
-        }
+    
+    dynamic "customization_spec" {
+      for_each = var.use_customization_spec ? [1] : []
+      content {
+        id = data.vsphere_guest_os_customization.custom_spec.id
       }
+    }
 
-      dynamic "windows_options" {
-        for_each = var.is_windows_image ? [1] : []
-        content {
-          computer_name         = var.staticvmname != null ? var.staticvmname : format("${var.vmname}${var.vmnameformat}", count.index + var.vmstartcount)
-          admin_password        = var.local_adminpass
-          workgroup             = var.workgroup
-          join_domain           = var.windomain
-          domain_admin_user     = var.domain_admin_user
-          domain_admin_password = var.domain_admin_password
-          organization_name     = var.orgname
-          run_once_command_list = var.run_once
-          auto_logon            = var.auto_logon
-          auto_logon_count      = var.auto_logon_count
-          time_zone             = var.time_zone
-          product_key           = var.productkey
-          full_name             = var.full_name
+    dynamic "customize" {
+      for_each = var.use_customization_spec ? [] : [1]
+      content {
+        dynamic "linux_options" {
+          for_each = var.is_windows_image ? [] : [1]
+          content {
+            host_name     = var.staticvmname != null ? var.staticvmname : format("${var.vmname}${var.vmnameformat}", count.index + var.vmstartcount)
+            domain        = var.domain
+            hw_clock_utc  = var.hw_clock_utc
+            script_text   = var.script_text
+          }
         }
-      }
 
-      dynamic "network_interface" {
-        for_each = keys(var.network)
-        content {
-          ipv4_address = split("/", var.network[keys(var.network)[network_interface.key]][count.index])[0]
-          ipv4_netmask = var.network[keys(var.network)[network_interface.key]][count.index] == "" ? null : (
-            length(split("/", var.network[keys(var.network)[network_interface.key]][count.index])) == 2 ? (
-              split("/", var.network[keys(var.network)[network_interface.key]][count.index])[1]
+        dynamic "windows_options" {
+          for_each = var.is_windows_image ? [1] : []
+          content {
+            computer_name         = var.staticvmname != null ? var.staticvmname : format("${var.vmname}${var.vmnameformat}", count.index + var.vmstartcount)
+            admin_password        = var.local_adminpass
+            workgroup             = var.workgroup
+            join_domain           = var.windomain
+            domain_admin_user     = var.domain_admin_user
+            domain_admin_password = var.domain_admin_password
+            organization_name     = var.orgname
+            run_once_command_list = local.adminpass_run_once_commands
+            auto_logon            = var.auto_logon
+            auto_logon_count      = var.auto_logon_count
+            time_zone             = var.time_zone
+            product_key           = var.productkey
+            full_name             = var.full_name
+          }
+        }
+
+        dynamic "network_interface" {
+          for_each = keys(var.network)
+          content {
+            ipv4_address = split("/", var.network[keys(var.network)[network_interface.key]][count.index])[0]
+            ipv4_netmask = var.network[keys(var.network)[network_interface.key]][count.index] == "" ? null : (
+              length(split("/", var.network[keys(var.network)[network_interface.key]][count.index])) == 2 ? (
+                split("/", var.network[keys(var.network)[network_interface.key]][count.index])[1]
               ) : (
-              length(var.ipv4submask) == 1 ? var.ipv4submask[0] : var.ipv4submask[network_interface.key]
+                length(var.ipv4submask) == 1 ? var.ipv4submask[0] : var.ipv4submask[network_interface.key]
+              )
             )
-          )
+          }
         }
+        dns_server_list = var.dns_server_list
+        dns_suffix_list = var.dns_suffix_list
+        ipv4_gateway    = var.vmgateway
       }
-      dns_server_list = var.dns_server_list
-      dns_suffix_list = var.dns_suffix_list
-      ipv4_gateway    = var.vmgateway
     }
   }
 

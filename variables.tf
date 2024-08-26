@@ -217,6 +217,20 @@ variable "dns_server_list" {
   default = null
 }
 
+# Guest OS Customization Specific Variables
+
+variable "use_customization_spec" {
+  description = "If true, use customization_spec; if false, use customize block."
+  type        = bool
+  default     = false
+}
+
+variable "customization_spec_name" {
+  description = "The name of the customization specification for the guest OS."
+  type        = string
+  default     = null
+}
+
 #Global Customization Variables
 variable "tags" {
   description = "The names of any tags to attach to this resource. They must already exist."
@@ -328,6 +342,12 @@ variable "domain" {
   default     = "Development.com"
 }
 
+variable "script_text" {
+  description = "The text of the script to run on the virtual machine."
+  type        = string
+  default     = null
+  
+}
 
 #Windows Customization Variables
 variable "is_windows_image" {
@@ -385,7 +405,7 @@ variable "time_zone" {
 variable "run_once" {
   description = "List of Comamnd to run during first logon (Automatic login set to 1)."
   type        = list(string)
-  default     = null
+  default     = []
 }
 
 variable "productkey" {
