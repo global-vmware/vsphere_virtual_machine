@@ -15,4 +15,4 @@
 #VIM Junk
 *.un~
 
-providers.tf
+provider.tf
