@@ -128,7 +128,7 @@ variable "vmname" {
 
 variable "vmnameformat" {
   description = "vmname format. default is set to 2 decimal with leading 0. example: %03d for 3 decimal with leading zero or %02dprod for additional suffix"
-  default     = "%02d"
+  default     = "%s-%02d"
 }
 
 variable "vmstartcount" {
